@@ -65,6 +65,8 @@ static void do_dbs_timer(struct work_struct *work);
 static int cpufreq_governor_dbs(struct cpufreq_policy *policy,
 				unsigned int event);
 
+extern DEFINE_PER_CPU(int, cpufreq_init_done);
+
 #ifndef CONFIG_CPU_FREQ_DEFAULT_GOV_ONDEMAND
 static
 #endif
@@ -147,7 +149,6 @@ static struct dbs_tuners {
 #ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
 	unsigned int two_phase_freq;
 #endif
-	unsigned int shortcut;
 	unsigned int origin_sampling_rate;
 	unsigned int ui_sampling_rate;
 	unsigned int ui_timeout;
@@ -166,7 +167,6 @@ static struct dbs_tuners {
 #ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
 	.two_phase_freq = 0,
 #endif
-	.shortcut = 0,
 	.ui_sampling_rate = DEF_UI_DYNAMIC_SAMPLING_RATE,
 	.ui_timeout = DBS_UI_SAMPLING_TIMEOUT,
 	.enable_boost_cpu = 1,
@@ -358,7 +358,6 @@ static ssize_t show_##file_name						\
 }
 show_one(sampling_rate, sampling_rate);
 show_one(io_is_busy, io_is_busy);
-show_one(shortcut, shortcut);
 show_one(up_threshold, up_threshold);
 show_one(up_threshold_multi_core, up_threshold_multi_core);
 show_one(down_differential, down_differential);
@@ -565,23 +564,6 @@ static ssize_t store_io_is_busy(struct kobject *a, struct attribute *b,
 	if (ret != 1)
 		return -EINVAL;
 	dbs_tuners_ins.io_is_busy = !!input;
-	return count;
-}
-
-static ssize_t store_shortcut(struct kobject *a, struct attribute *b,
-				   const char *buf, size_t count)
-{
-	unsigned int input;
-	int ret;
-
-	ret = sscanf(buf, "%u", &input);
-	if (ret != 1)
-		return -EINVAL;
-
-	if (dbs_tuners_ins.shortcut != input) {
-		dbs_tuners_ins.shortcut = input;
-	}
-
 	return count;
 }
 
@@ -835,7 +817,6 @@ static ssize_t store_enable_boost_cpu(struct kobject *a, struct attribute *b,
 
 define_one_global_rw(sampling_rate);
 define_one_global_rw(io_is_busy);
-define_one_global_rw(shortcut);
 define_one_global_rw(up_threshold);
 define_one_global_rw(down_differential);
 define_one_global_rw(sampling_down_factor);
@@ -862,7 +843,6 @@ static struct attribute *dbs_attributes[] = {
 	&ignore_nice_load.attr,
 	&powersave_bias.attr,
 	&io_is_busy.attr,
-	&shortcut.attr,
 	&up_threshold_multi_core.attr,
 	&optimal_freq.attr,
 	&up_threshold_any_cpu_load.attr,
@@ -1131,7 +1111,6 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 	static unsigned int counter = 0;
 	unsigned int nr_cpus;
 #endif
-	unsigned int up_threshold = dbs_tuners_ins.up_threshold;;
 
 	this_dbs_info->freq_lo = 0;
 	policy = this_dbs_info->cur_policy;
@@ -1182,22 +1161,9 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
 	
 #ifdef CONFIG_CPU_FREQ_GOV_ONDEMAND_MULTI_PHASE
-
-	if (!dbs_tuners_ins.shortcut)
-		up_threshold = up_threshold_level[1];
-
-	if (max_load_freq > up_threshold * policy->cur) {
-		unsigned int avg_load;
-		int index;
-
-		
-		if (dbs_tuners_ins.shortcut) {
-			freq_next = policy->cpuinfo.max_freq;
-			goto set_freq;
-		}
-
-		avg_load = (prev_load + cur_load) >> 1;
-		index = get_cpu_freq_index(policy->cur);
+	if (max_load_freq > up_threshold_level[1] * policy->cur) {
+		unsigned int avg_load = (prev_load + cur_load) >> 1;
+		int index = get_cpu_freq_index(policy->cur);
 
 		
 		if (FREQ_NEED_BURST(policy->cur) && cur_load > up_threshold_level[0]) {
@@ -1222,8 +1188,6 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 				freq_next = tblmap[tbl_select[1]][index];
 			}
 		}
-
-set_freq:
 		dbs_freq_increase(policy, cur_load, freq_next);
 		
 		if (policy->cur == policy->max)
@@ -1231,7 +1195,7 @@ set_freq:
 		return;
 	}
 #else
-	if (max_load_freq > up_threshold * policy->cur) {
+	if (max_load_freq > dbs_tuners_ins.up_threshold * policy->cur) {
 		
 #ifndef CONFIG_CPU_FREQ_GOV_ONDEMAND_2_PHASE
 		if (policy->cur < policy->max)
@@ -1239,10 +1203,6 @@ set_freq:
 				dbs_tuners_ins.sampling_down_factor;
 		dbs_freq_increase(policy, cur_load, policy->max);
 #else
-		
-		if (dbs_tuners_ins.shortcut)
-			counter = 2;
-
 		if (counter < 5) {
 			counter++;
 			if (counter > 2) {
