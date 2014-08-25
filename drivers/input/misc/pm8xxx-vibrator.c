@@ -241,7 +241,6 @@ err_free_mem:
 
 	return error;
 }
-
 static int __devexit pm8xxx_vib_remove(struct platform_device *pdev)
 {
 	struct pm8xxx_vib *vib = platform_get_drvdata(pdev);
